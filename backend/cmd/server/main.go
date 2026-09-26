@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/MadeRaditya/task-management/internal/cache"
 	"github.com/MadeRaditya/task-management/internal/config"
 	"github.com/MadeRaditya/task-management/internal/database"
+	"github.com/MadeRaditya/task-management/internal/handler"
+	"github.com/MadeRaditya/task-management/internal/repository"
+	"github.com/MadeRaditya/task-management/internal/service"
 )
 
 func main() {
@@ -32,36 +35,25 @@ func main() {
 	defer rdb.Close()
 	log.Println("Redis connected")
 
+	taskRepo := repository.NewTaskRepository(db)
+	taskCache := cache.NewTaskCache(rdb)
+	taskSvc := service.NewTaskService(taskRepo, taskCache)
+
 	r := gin.Default()
-
-	r.GET("/ping", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"message": "pong"})
-	})
-
-	r.GET("/health", func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
-		defer cancel()
-
-		dbStatus := "ok"
-		if err := db.PingContext(ctx); err != nil {
-			dbStatus = "error: " + err.Error()
-		}
-
-		redisStatus := "ok"
-		if err := rdb.Ping(ctx).Err(); err != nil {
-			redisStatus = "error: " + err.Error()
-		}
-
-		status := http.StatusOK
-		if dbStatus != "ok" || redisStatus != "ok" {
-			status = http.StatusServiceUnavailable
-		}
-
-		c.JSON(status, gin.H{
-			"mysql": dbStatus,
-			"redis": redisStatus,
-		})
-	})
+	handler.RegisterRoutes(
+		r,
+		taskSvc,
+		func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			return db.PingContext(ctx)
+		},
+		func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			return rdb.Ping(ctx).Err()
+		},
+	)
 
 	log.Printf("Server running on :%s", cfg.AppPort)
 	if err := r.Run(":" + cfg.AppPort); err != nil {
